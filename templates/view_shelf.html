@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>View Bookshelf</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+    <style>
+        .shelf-container {
+            position: relative;
+        }
+        .shelf-image {
+            max-width: 100%;
+        }
+        .object-overlay {
+            position: absolute;
+            border: 2px solid;
+            background-color: rgba(255, 255, 255, 0.3);
+            cursor: pointer;
+        }
+        .book-overlay {
+            border-color: #3273dc;
+        }
+        .misc-overlay {
+            border-color: #ff3860;
+        }
+        .object-tooltip {
+            position: absolute;
+            background-color: white;
+            border: 1px solid #ccc;
+            padding: 10px;
+            border-radius: 4px;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+            max-width: 250px;
+            z-index: 100;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <section class="hero is-primary">
+        <div class="hero-body">
+            <div class="container">
+                <h1 class="title">{{ shelf.title }}</h1>
+                <h2 class="subtitle">Shared Bookshelf</h2>
+            </div>
+        </div>
+    </section>
+
+    <section class="section">
+        <div class="container">
+            <div class="shelf-container">
+                <img src="{{ shelf.image_url }}" alt="Bookshelf" class="shelf-image">
+                {% for obj in shelf.objects %}
+                <div class="object-overlay {{ 'book-overlay' if obj.type == 'book' else 'misc-overlay' }}" 
+                     data-id="{{ obj.id }}"
+                     style="left: {{ obj.bounding_box[0] }}px; top: {{ obj.bounding_box[1] }}px; width: {{ obj.bounding_box[2] - obj.bounding_box[0] }}px; height: {{ obj.bounding_box[3] - obj.bounding_box[1] }}px;">
+                </div>
+                {% endfor %}
+                
+                <div id="objectTooltip" class="object-tooltip"></div>
+            </div>
+            
+            <div class="columns mt-5">
+                <div class="column is-12">
+                    <div class="content">
+                        <h3 class="title is-4">Shelf Contents</h3>
+                        
+                        <div class="columns is-multiline">
+                            {% for obj in shelf.objects %}
+                            <div class="column is-4">
+                                <div class="card" data-id="{{ obj.id }}">
+                                    <div class="card-content">
+                                        {% if obj.type == 'book' %}
+                                        <p class="title is-5">{{ obj.title }}</p>
+                                        <p class="subtitle is-6">by {{ obj.author }}</p>
+                                        {% if obj.isbn %}
+                                        <p>ISBN: {{ obj.isbn }}</p>
+                                        {% endif %}
+                                        {% else %}
+                                        <p class="title is-5">{{ obj.label }}</p>
+                                        {% endif %}
+                                        
+                                        {% if obj.note %}
+                                        <div class="content">
+                                            <p>{{ obj.note }}</p>
+                                        </div>
+                                        {% endif %}
+                                        
+                                        {% if obj.tags and obj.tags|length > 0 %}
+                                        <div class="tags">
+                                            {% for tag in obj.tags %}
+                                            <span class="tag is-info">{{ tag }}</span>
+                                            {% endfor %}
+                                        </div>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const objects = {{ shelf.objects|tojson }};
+            const tooltip = document.getElementById('objectTooltip');
+            
+            // Add mouse events to overlays
+            document.querySelectorAll('.object-overlay').forEach(overlay => {
+                overlay.addEventListener('mouseenter', (e) => {
+                    const objectId = overlay.dataset.id;
+                    const object = objects.find(obj => obj.id === objectId);
+                    
+                    let content = '';
+                    if (object.type === 'book') {
+                        content = `<strong>${object.title}</strong><br>by ${object.author}`;
+                    } else {
+                        content = `<strong>${object.label}</strong>`;
+                    }
+                    
+                    tooltip.innerHTML = content;
+                    tooltip.style.display = 'block';
+                    
+                    // Position tooltip near mouse but not covering it
+                    const rect = overlay.getBoundingClientRect();
+                    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
+                    
+                    tooltip.style.left = `${rect.right + 10}px`;
+                    tooltip.style.top = `${rect.top + scrollTop}px`;
+                });
+                
+                overlay.addEventListener('mouseleave', () => {
+                    tooltip.style.display = 'none';
+                });
+                
+                // Highlight corresponding card when clicking overlay
+                overlay.addEventListener('click', () => {
+                    const objectId = overlay.dataset.id;
+                    const card = document.querySelector(`.card[data-id="${objectId}"]`);
+                    
+                    // Scroll to the card
+                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    
+                    // Highlight briefly
+                    card.classList.add('has-background-light');
+                    setTimeout(() => {
+                        card.classList.remove('has-background-light');
+                    }, 2000);
+                });
+            });
+            
+            // Highlight overlay when hovering over card
+            document.querySelectorAll('.card').forEach(card => {
+                card.addEventListener('mouseenter', () => {
+                    const objectId = card.dataset.id;
+                    const overlay = document.querySelector(`.object-overlay[data-id="${objectId}"]`);
+                    overlay.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+                });
+                
+                card.addEventListener('mouseleave', () => {
+                    const objectId = card.dataset.id;
+                    const overlay = document.querySelector(`.object-overlay[data-id="${objectId}"]`);
+                    overlay.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                });
+            });
+        });
+    </script>
+</body>
+</html>

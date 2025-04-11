@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Edit Bookshelf</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bulma@0.9.4/css/bulma.min.css">
+    <style>
+        .shelf-container {
+            position: relative;
+        }
+        .shelf-image {
+            max-width: 100%;
+        }
+        .object-overlay {
+            position: absolute;
+            border: 2px solid;
+            background-color: rgba(255, 255, 255, 0.3);
+            cursor: pointer;
+        }
+        .book-overlay {
+            border-color: #3273dc;
+        }
+        .misc-overlay {
+            border-color: #ff3860;
+        }
+        .object-selected {
+            background-color: rgba(255, 255, 0, 0.3);
+        }
+        .object-editor {
+            margin-top: 20px;
+        }
+    </style>
+</head>
+<body>
+    <section class="hero is-primary">
+        <div class="hero-body">
+            <div class="container">
+                <h1 class="title">Edit Your Bookshelf</h1>
+                <h2 class="subtitle">Confirm or edit the detected objects</h2>
+            </div>
+        </div>
+    </section>
+
+    <section class="section">
+        <div class="container">
+            <div class="columns">
+                <div class="column is-8">
+                    <div class="shelf-container">
+                        <img src="{{ shelf.image_url }}" alt="Bookshelf" class="shelf-image">
+                        {% for obj in shelf.objects %}
+                        <div class="object-overlay {{ 'book-overlay' if obj.type == 'book' else 'misc-overlay' }}" 
+                             data-id="{{ obj.id }}"
+                             style="left: {{ obj.bounding_box[0] }}px; top: {{ obj.bounding_box[1] }}px; width: {{ obj.bounding_box[2] - obj.bounding_box[0] }}px; height: {{ obj.bounding_box[3] - obj.bounding_box[1] }}px;">
+                        </div>
+                        {% endfor %}
+                    </div>
+                </div>
+                <div class="column is-4">
+                    <div class="card">
+                        <div class="card-content">
+                            <p class="title is-4">Object Details</p>
+                            <p class="subtitle is-6">Select an object to edit</p>
+                            
+                            <div id="objectEditor" class="is-hidden object-editor">
+                                <input type="hidden" id="objectId">
+                                <input type="hidden" id="objectType">
+                                
+                                <!-- Book fields -->
+                                <div id="bookFields">
+                                    <div class="field">
+                                        <label class="label">Title</label>
+                                        <div class="control">
+                                            <input class="input" type="text" id="bookTitle">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="field">
+                                        <label class="label">Author</label>
+                                        <div class="control">
+                                            <input class="input" type="text" id="bookAuthor">
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="field">
+                                        <label class="label">ISBN</label>
+                                        <div class="control">
+                                            <input class="input" type="text" id="bookIsbn">
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Misc fields -->
+                                <div id="miscFields">
+                                    <div class="field">
+                                        <label class="label">Label</label>
+                                        <div class="control">
+                                            <input class="input" type="text" id="miscLabel">
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <!-- Common fields -->
+                                <div class="field">
+                                    <label class="label">Notes</label>
+                                    <div class="control">
+                                        <textarea class="textarea" id="objectNotes" placeholder="Add notes about this item..."></textarea>
+                                    </div>
+                                </div>
+                                
+                                <div class="field">
+                                    <label class="label">Tags (comma separated)</label>
+                                    <div class="control">
+                                        <input class="input" type="text" id="objectTags" placeholder="sci-fi, favorite, etc">
+                                    </div>
+                                </div>
+                                
+                                <div class="field">
+                                    <div class="control">
+                                        <button class="button is-primary" id="saveObject">Save Changes</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="card mt-4">
+                        <div class="card-content">
+                            <div class="content">
+                                <button class="button is-success is-fullwidth" id="publishShelf">Publish Shelf</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const objects = {{ shelf.objects|tojson }};
+            let selectedObject = null;
+            
+            // Add click handlers to overlays
+            document.querySelectorAll('.object-overlay').forEach(overlay => {
+                overlay.addEventListener('click', () => {
+                    const objectId = overlay.dataset.id;
+                    selectObject(objectId);
+                });
+            });
+            
+            // Select an object
+            function selectObject(objectId) {
+                // Clear previous selection
+                document.querySelectorAll('.object-overlay').forEach(o => {
+                    o.classList.remove('object-selected');
+                });
+                
+                // Find the object data
+                selectedObject = objects.find(obj => obj.id === objectId);
+                
+                // Highlight the selected overlay
+                document.querySelector(`.object-overlay[data-id="${objectId}"]`).classList.add('object-selected');
+                
+                // Populate the editor
+                document.getElementById('objectId').value = selectedObject.id;
+                document.getElementById('objectType').value = selectedObject.type;
+                
+                // Show/hide appropriate fields
+                if (selectedObject.type === 'book') {
+                    document.getElementById('bookFields').classList.remove('is-hidden');
+                    document.getElementById('miscFields').classList.add('is-hidden');
+                    document.getElementById('bookTitle').value = selectedObject.title || '';
+                    document.getElementById('bookAuthor').value = selectedObject.author || '';
+                    document.getElementById('bookIsbn').value = selectedObject.isbn || '';
+                } else {
+                    document.getElementById('bookFields').classList.add('is-hidden');
+                    document.getElementById('miscFields').classList.remove('is-hidden');
+                    document.getElementById('miscLabel').value = selectedObject.label || '';
+                }
+                
+                // Set common fields
+                document.getElementById('objectNotes').value = selectedObject.note || '';
+                document.getElementById('objectTags').value = (selectedObject.tags || []).join(', ');
+                
+                // Show the editor
+                document.getElementById('objectEditor').classList.remove('is-hidden');
+            }
+            
+            // Save object changes
+            document.getElementById('saveObject').addEventListener('click', () => {
+                if (!selectedObject) return;
+                
+                const updates = {
+                    object_id: selectedObject.id,
+                    status: 'edited'
+                };
+                
+                if (selectedObject.type === 'book') {
+                    updates.title = document.getElementById('bookTitle').value;
+                    updates.author = document.getElementById('bookAuthor').value;
+                    updates.isbn = document.getElementById('bookIsbn').value;
+                } else {
+                    updates.label = document.getElementById('miscLabel').value;
+                }
+                
+                updates.notes = document.getElementById('objectNotes').value;
+                updates.tags = document.getElementById('objectTags').value
+                    .split(',')
+                    .map(tag => tag.trim())
+                    .filter(tag => tag);
+                
+                // Update in the UI
+                for (const key in updates) {
+                    if (key !== 'object_id' && key !== 'status') {
+                        selectedObject[key === 'notes' ? 'note' : key] = updates[key];
+                    }
+                }
+                
+                // Send to server
+                fetch('/api/shelf/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        shelf_id: '{{ shelf.id }}',
+                        objects: [updates]
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        alert('Changes saved successfully!');
+                    }
+                });
+            });
+            
+            // Publish shelf
+            document.getElementById('publishShelf').addEventListener('click', () => {
+                fetch('/api/shelf/update', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        shelf_id: '{{ shelf.id }}',
+                        publish: true
+                    })
+                })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'success') {
+                        window.location.href = '/view/{{ shelf.id }}';
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
