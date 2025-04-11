@@ -8,15 +8,22 @@
     <style>
         .shelf-container {
             position: relative;
+            width: 100%;
+            height: auto;
+            overflow: hidden;
         }
         .shelf-image {
-            max-width: 100%;
+            width: 100%;
+            height: auto;
+            display: block;
         }
         .object-overlay {
             position: absolute;
             border: 2px solid;
             background-color: rgba(255, 255, 255, 0.3);
             cursor: pointer;
+            /* Ensure percentage-based positioning works */
+            transform-origin: top left;
         }
         .book-overlay {
             border-color: #3273dc;
@@ -46,12 +53,15 @@
         <div class="container">
             <div class="columns">
                 <div class="column is-8">
-                    <div class="shelf-container">
-                        <img src="{{ shelf.image_url }}" alt="Bookshelf" class="shelf-image">
+                    <div class="shelf-container" id="shelf-container">
+                        <img src="{{ shelf.image_url }}" alt="Bookshelf" class="shelf-image" id="shelf-image">
                         {% for obj in shelf.objects %}
                         <div class="object-overlay {{ 'book-overlay' if obj.type == 'book' else 'misc-overlay' }}" 
                              data-id="{{ obj.id }}"
-                             style="left: {{ obj.bounding_box[0] }}px; top: {{ obj.bounding_box[1] }}px; width: {{ obj.bounding_box[2] - obj.bounding_box[0] }}px; height: {{ obj.bounding_box[3] - obj.bounding_box[1] }}px;">
+                             data-x1="{{ obj.bounding_box[0] }}" 
+                             data-y1="{{ obj.bounding_box[1] }}" 
+                             data-x2="{{ obj.bounding_box[2] }}" 
+                             data-y2="{{ obj.bounding_box[3] }}">
                         </div>
                         {% endfor %}
                     </div>
@@ -140,6 +150,51 @@
         document.addEventListener('DOMContentLoaded', () => {
             const objects = {{ shelf.objects|tojson }};
             let selectedObject = null;
+            
+            // Position all overlays correctly
+            function positionOverlays() {
+                const image = document.getElementById('shelf-image');
+                const container = document.getElementById('shelf-container');
+                const displayedWidth = image.clientWidth;
+                const displayedHeight = image.clientHeight;
+                
+                // Get the natural dimensions of the image
+                const naturalWidth = image.naturalWidth;
+                const naturalHeight = image.naturalHeight;
+                
+                // Calculate scale factors
+                const scaleX = displayedWidth / naturalWidth;
+                const scaleY = displayedHeight / naturalHeight;
+                
+                // Position each overlay
+                document.querySelectorAll('.object-overlay').forEach(overlay => {
+                    const x1 = parseFloat(overlay.dataset.x1);
+                    const y1 = parseFloat(overlay.dataset.y1);
+                    const x2 = parseFloat(overlay.dataset.x2);
+                    const y2 = parseFloat(overlay.dataset.y2);
+                    
+                    // Scale the coordinates
+                    const scaledX1 = x1 * scaleX;
+                    const scaledY1 = y1 * scaleY;
+                    const scaledWidth = (x2 - x1) * scaleX;
+                    const scaledHeight = (y2 - y1) * scaleY;
+                    
+                    // Apply the scaled positions
+                    overlay.style.left = `${scaledX1}px`;
+                    overlay.style.top = `${scaledY1}px`;
+                    overlay.style.width = `${scaledWidth}px`;
+                    overlay.style.height = `${scaledHeight}px`;
+                });
+            }
+            
+            // Position overlays on initial load
+            positionOverlays();
+            
+            // Reposition on window resize
+            window.addEventListener('resize', positionOverlays);
+            
+            // Also reposition when the image loads (in case it wasn't loaded yet)
+            document.getElementById('shelf-image').addEventListener('load', positionOverlays);
             
             // Add click handlers to overlays
             document.querySelectorAll('.object-overlay').forEach(overlay => {

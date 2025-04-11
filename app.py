@@ -4,7 +4,7 @@ from werkzeug.utils import secure_filename
 import uuid
 
 from database import init_db, create_user, create_shelf, add_shelf_image, add_shelf_objects, get_shelf_objects, update_shelf_object, publish_shelf, get_shelf
-from vision import process_shelf_image
+from vision import process_shelf_image, post_process_results
 
 # Initialize Flask app
 app = Flask(__name__)
@@ -24,7 +24,7 @@ test_user_id = create_user('testuser', 'test@example.com')
 @app.route('/')
 def index():
     return render_template('index.html', user_id=test_user_id)
-
+# In app.py, update the upload route:
 @app.route('/upload', methods=['GET', 'POST'])
 def upload():
     if request.method == 'POST':
@@ -50,8 +50,17 @@ def upload():
             # Add image to shelf
             add_shelf_image(shelf_id, image_url)
             
-            # Process the image (in a real app, this might be async)
-            objects = process_shelf_image(image_url)
+            # Get image dimensions
+            from PIL import Image
+            img = Image.open(filepath)
+            img_width, img_height = img.size
+            
+            # Process the image with our vision system
+            # This function handles scaling for vision processing and returns coordinates in original scale
+            objects = process_shelf_image(filepath)
+            
+            # Post-process results - only apply safety bounds and sorting
+            objects = post_process_results(objects, img_width, img_height)
             
             # Add detected objects to database
             add_shelf_objects(shelf_id, objects)
@@ -77,8 +86,28 @@ def api_ingest():
     image_url = image_urls[0]
     add_shelf_image(shelf_id, image_url)
     
-    # Process the image
-    objects = process_shelf_image(image_url)
+    # Get the image path from URL
+    if image_url.startswith('/uploads/'):
+        image_path = os.path.join(app.config['UPLOAD_FOLDER'], image_url.split('/')[-1])
+    else:
+        # If it's an external URL, we'd need to download it first
+        # For simplicity, assuming all images are local uploads for now
+        image_path = image_url
+    
+    # Get image dimensions if possible
+    try:
+        from PIL import Image
+        img = Image.open(image_path)
+        img_width, img_height = img.size
+    except:
+        # Default dimensions if we can't open the image
+        img_width, img_height = 1000, 1000
+    
+    # Process the image - coordinates are already scaled to original dimensions
+    objects = process_shelf_image(image_path)
+    
+    # Post-process results - only apply safety bounds and sorting
+    objects = post_process_results(objects, img_width, img_height)
     
     # Add objects to database
     add_shelf_objects(shelf_id, objects)
@@ -198,5 +227,20 @@ def api_view_shelf(shelf_id):
 def uploaded_file(filename):
     return send_from_directory(app.config['UPLOAD_FOLDER'], filename)
 
+
+@app.errorhandler(Exception)
+def handle_exception(e):
+    # Log the error
+    app.logger.error(f"Error: {str(e)}")
+    
+    # Create a user-friendly error message
+    if "OpenAI API" in str(e):
+        error_message = "There was an issue analyzing your bookshelf image. Please try again later."
+    else:
+        error_message = "An unexpected error occurred. Please try again."
+    
+    return render_template('error.html', error=error_message), 500
+
 if __name__ == '__main__':
     app.run(debug=True)
+
