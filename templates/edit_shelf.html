@@ -11,31 +11,49 @@
             width: 100%;
             height: auto;
             overflow: hidden;
+            background-color: #f5f5f5; /* Light background */
         }
         .shelf-image {
             width: 100%;
             height: auto;
             display: block;
+            /* Ensure image doesn't exceed container, maintains aspect ratio */
+            max-width: 100%; 
+            max-height: 80vh; /* Limit height for better viewing */
+            object-fit: fill; /* Stretch/squish to fill bounds */
         }
-        .object-overlay {
+        .overlay {
             position: absolute;
-            border: 2px solid;
-            background-color: rgba(255, 255, 255, 0.3);
+            box-sizing: border-box; /* Include border in size */
             cursor: pointer;
-            /* Ensure percentage-based positioning works */
             transform-origin: top left;
         }
+        .object-overlay {
+            border: 2px solid;
+            background-color: rgba(255, 255, 255, 0.3);
+        }
         .book-overlay {
-            border-color: #3273dc;
+            border-color: #3273dc; /* Bulma primary blue */
         }
         .misc-overlay {
-            border-color: #ff3860;
+            border-color: #ff3860; /* Bulma danger red */
         }
         .object-selected {
-            background-color: rgba(255, 255, 0, 0.3);
+            background-color: rgba(72, 199, 116, 0.4); /* Bulma success green, semi-transparent */
+            border-width: 3px;
+        }
+        .object-needs-search {
+            border-style: dashed; /* Indicate items flagged for search */
+            border-color: orange;
         }
         .object-editor {
             margin-top: 20px;
+            max-height: 70vh; /* Allow scrolling if content is too long */
+            overflow-y: auto;
+        }
+        .editor-card {
+             position: sticky;
+             top: 20px; /* Stick editor card to top */
         }
     </style>
 </head>
@@ -54,29 +72,51 @@
             <div class="columns">
                 <div class="column is-8">
                     <div class="shelf-container" id="shelf-container">
-                        <img src="{{ shelf.image_url }}" alt="Bookshelf" class="shelf-image" id="shelf-image">
+                        {% if shelf.images and shelf.images|length > 0 %}
+                        <img src="{{ shelf.images[0].image_url }}" alt="Bookshelf" class="shelf-image" id="shelf-image"
+                             data-source-width="{{ shelf.images[0].processed_width }}"
+                             data-source-height="{{ shelf.images[0].processed_height }}">
+                        {% else %}
+                        <p class="has-text-danger">Shelf image not found.</p>
+                        {% endif %}
+                        
                         {% for obj in shelf.objects %}
-                        <div class="object-overlay {{ 'book-overlay' if obj.type == 'book' else 'misc-overlay' }}" 
+                        <div class="overlay object-overlay {{ 'book-overlay' if obj.type == 'book' else 'misc-overlay' }} {{ 'object-needs-search' if obj.needs_agentic_search }}"
                              data-id="{{ obj.id }}"
+                             data-type="{{ obj.type }}"
                              data-x1="{{ obj.bounding_box[0] }}" 
                              data-y1="{{ obj.bounding_box[1] }}" 
                              data-x2="{{ obj.bounding_box[2] }}" 
-                             data-y2="{{ obj.bounding_box[3] }}">
+                             data-y2="{{ obj.bounding_box[3] }}"
+                             data-title="{{ obj.title | default('', true) }}"
+                             data-author="{{ obj.author | default('', true) }}"
+                             data-isbn="{{ obj.isbn | default('', true) }}"
+                             data-label="{{ obj.label | default('', true) }}"
+                             data-gpt-confidence="{{ obj.gpt_confidence | default('N/A', true) }}"
+                             data-yolo-confidence="{{ obj.confidence | default(0.0, true) | round(3) }}"
+                             data-needs-search="{{ 'true' if obj.needs_agentic_search else 'false' }}"
+                             data-notes="{{ obj.note | default('', true) }}"
+                             data-tags="{{ obj.tags | join(',') if obj.tags else '' }}">
                         </div>
                         {% endfor %}
                     </div>
                 </div>
                 <div class="column is-4">
-                    <div class="card">
+                    <div class="card editor-card">
                         <div class="card-content">
                             <p class="title is-4">Object Details</p>
-                            <p class="subtitle is-6">Select an object to edit</p>
+                            <p class="subtitle is-6" id="editor-subtitle">Select an object to edit</p>
                             
                             <div id="objectEditor" class="is-hidden object-editor">
                                 <input type="hidden" id="objectId">
-                                <input type="hidden" id="objectType">
                                 
-                                <!-- Book fields -->
+                                <div class="field">
+                                    <label class="label">Detection Info</label>
+                                    <p>YOLO Confidence: <span id="yoloConfDisplay">N/A</span></p>
+                                    <p>GPT Confidence: <span id="gptConfDisplay">N/A</span></p>
+                                    <p id="searchFlagDisplay" class="has-text-warning is-hidden">Flagged for agentic search.</p>
+                                </div>
+
                                 <div id="bookFields">
                                     <div class="field">
                                         <label class="label">Title</label>
@@ -84,14 +124,12 @@
                                             <input class="input" type="text" id="bookTitle">
                                         </div>
                                     </div>
-                                    
                                     <div class="field">
                                         <label class="label">Author</label>
                                         <div class="control">
                                             <input class="input" type="text" id="bookAuthor">
                                         </div>
                                     </div>
-                                    
                                     <div class="field">
                                         <label class="label">ISBN</label>
                                         <div class="control">
@@ -100,7 +138,6 @@
                                     </div>
                                 </div>
                                 
-                                <!-- Misc fields -->
                                 <div id="miscFields">
                                     <div class="field">
                                         <label class="label">Label</label>
@@ -110,24 +147,21 @@
                                     </div>
                                 </div>
                                 
-                                <!-- Common fields -->
                                 <div class="field">
                                     <label class="label">Notes</label>
                                     <div class="control">
                                         <textarea class="textarea" id="objectNotes" placeholder="Add notes about this item..."></textarea>
                                     </div>
                                 </div>
-                                
                                 <div class="field">
                                     <label class="label">Tags (comma separated)</label>
                                     <div class="control">
                                         <input class="input" type="text" id="objectTags" placeholder="sci-fi, favorite, etc">
                                     </div>
                                 </div>
-                                
                                 <div class="field">
                                     <div class="control">
-                                        <button class="button is-primary" id="saveObject">Save Changes</button>
+                                        <button class="button is-link" id="saveObject">Save Changes</button>
                                     </div>
                                 </div>
                             </div>
@@ -148,168 +182,271 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            const objects = {{ shelf.objects|tojson }};
-            let selectedObject = null;
+            let selectedObjectId = null; // Keep track of the ID of the selected object overlay
+            const editorSubtitle = document.getElementById('editor-subtitle');
+            const image = document.getElementById('shelf-image');
+            const container = document.getElementById('shelf-container');
+            const objectEditor = document.getElementById('objectEditor');
+            const bookFields = document.getElementById('bookFields');
+            const miscFields = document.getElementById('miscFields');
+            const yoloConfDisplay = document.getElementById('yoloConfDisplay');
+            const gptConfDisplay = document.getElementById('gptConfDisplay');
+            const searchFlagDisplay = document.getElementById('searchFlagDisplay');
             
-            // Position all overlays correctly
+            // Input fields
+            const objectIdInput = document.getElementById('objectId');
+            const bookTitleInput = document.getElementById('bookTitle');
+            const bookAuthorInput = document.getElementById('bookAuthor');
+            const bookIsbnInput = document.getElementById('bookIsbn');
+            const miscLabelInput = document.getElementById('miscLabel');
+            const objectNotesInput = document.getElementById('objectNotes');
+            const objectTagsInput = document.getElementById('objectTags');
+
+            let imageNaturalWidth = 0;
+            let imageNaturalHeight = 0;
+            
+            function scaleCoords(originalX, originalY, scaleX, scaleY) {
+                return { x: originalX * scaleX, y: originalY * scaleY };
+            }
+
             function positionOverlays() {
-                const image = document.getElementById('shelf-image');
-                const container = document.getElementById('shelf-container');
-                const displayedWidth = image.clientWidth;
-                const displayedHeight = image.clientHeight;
+                 if (!image || !image.complete || image.clientWidth === 0) {
+                    console.warn("Image not loaded yet or not found for positioning");
+                    // Maybe attempt to reposition later?
+                    // setTimeout(positionOverlays, 500);
+                    return; 
+                }
                 
-                // Get the natural dimensions of the image
-                const naturalWidth = image.naturalWidth;
-                const naturalHeight = image.naturalHeight;
+                // Read the source dimensions stored in data attributes
+                const sourceWidth = parseFloat(image.dataset.sourceWidth);
+                const sourceHeight = parseFloat(image.dataset.sourceHeight);
+
+                if (!sourceWidth || !sourceHeight || sourceWidth === 0 || sourceHeight === 0) {
+                    console.error("Source dimensions not found or invalid in image data attributes. Using natural dimensions as fallback.");
+                    // Fall back to natural dimensions, but this may be incorrect due to EXIF orientation
+                    imageNaturalWidth = image.naturalWidth;
+                    imageNaturalHeight = image.naturalHeight;
+                } else {
+                    // Use the stored processed dimensions that account for EXIF rotation
+                    imageNaturalWidth = sourceWidth;
+                    imageNaturalHeight = sourceHeight;
+                }
                 
-                // Calculate scale factors
-                const scaleX = displayedWidth / naturalWidth;
-                const scaleY = displayedHeight / naturalHeight;
+                const naturalWidth = imageNaturalWidth;
+                const naturalHeight = imageNaturalHeight;
                 
-                // Position each overlay
-                document.querySelectorAll('.object-overlay').forEach(overlay => {
+                const displayedImgElementWidth = image.clientWidth; // Width of the <img> element itself
+                const displayedImgElementHeight = image.clientHeight; // Height of the <img> element itself
+                
+                // Get container dimensions
+                const containerWidth = container.clientWidth;
+                const containerHeight = container.clientHeight;
+
+                // Calculate scale factors based on displayed size vs source size
+                const scaleX = displayedImgElementWidth / naturalWidth;
+                const scaleY = displayedImgElementHeight / naturalHeight;
+                
+                if (isNaN(scaleX) || isNaN(scaleY) || scaleX <= 0 || scaleY <= 0) {
+                    console.error(`Invalid scale factors calculated (scaleX: ${scaleX}, scaleY: ${scaleY}). Aborting overlay positioning.`);
+                    return; 
+                }
+
+                // Calculate the padding added by object-fit: contain
+                const offsetX = (containerWidth - displayedImgElementWidth) / 2;
+                const offsetY = (containerHeight - displayedImgElementHeight) / 2;
+
+                // Select ALL overlays
+                document.querySelectorAll('.overlay').forEach(overlay => {
                     const x1 = parseFloat(overlay.dataset.x1);
                     const y1 = parseFloat(overlay.dataset.y1);
                     const x2 = parseFloat(overlay.dataset.x2);
                     const y2 = parseFloat(overlay.dataset.y2);
-                    
-                    // Scale the coordinates
+
+                    // Apply scaling directly
                     const scaledX1 = x1 * scaleX;
                     const scaledY1 = y1 * scaleY;
                     const scaledWidth = (x2 - x1) * scaleX;
                     const scaledHeight = (y2 - y1) * scaleY;
                     
-                    // Apply the scaled positions
-                    overlay.style.left = `${scaledX1}px`;
-                    overlay.style.top = `${scaledY1}px`;
-                    overlay.style.width = `${scaledWidth}px`;
-                    overlay.style.height = `${scaledHeight}px`;
+                    // Position relative to the container, accounting for the image's offset
+                    overlay.style.left = `${scaledX1 + offsetX}px`; 
+                    overlay.style.top = `${scaledY1 + offsetY}px`; 
+                    overlay.style.width = `${Math.max(0, scaledWidth)}px`;
+                    overlay.style.height = `${Math.max(0, scaledHeight)}px`;
                 });
             }
-            
-            // Position overlays on initial load
-            positionOverlays();
-            
-            // Reposition on window resize
-            window.addEventListener('resize', positionOverlays);
-            
-            // Also reposition when the image loads (in case it wasn't loaded yet)
-            document.getElementById('shelf-image').addEventListener('load', positionOverlays);
-            
-            // Add click handlers to overlays
-            document.querySelectorAll('.object-overlay').forEach(overlay => {
-                overlay.addEventListener('click', () => {
-                    const objectId = overlay.dataset.id;
-                    selectObject(objectId);
-                });
-            });
-            
-            // Select an object
-            function selectObject(objectId) {
-                // Clear previous selection
-                document.querySelectorAll('.object-overlay').forEach(o => {
-                    o.classList.remove('object-selected');
-                });
-                
-                // Find the object data
-                selectedObject = objects.find(obj => obj.id === objectId);
-                
-                // Highlight the selected overlay
-                document.querySelector(`.object-overlay[data-id="${objectId}"]`).classList.add('object-selected');
-                
-                // Populate the editor
-                document.getElementById('objectId').value = selectedObject.id;
-                document.getElementById('objectType').value = selectedObject.type;
-                
-                // Show/hide appropriate fields
-                if (selectedObject.type === 'book') {
-                    document.getElementById('bookFields').classList.remove('is-hidden');
-                    document.getElementById('miscFields').classList.add('is-hidden');
-                    document.getElementById('bookTitle').value = selectedObject.title || '';
-                    document.getElementById('bookAuthor').value = selectedObject.author || '';
-                    document.getElementById('bookIsbn').value = selectedObject.isbn || '';
-                } else {
-                    document.getElementById('bookFields').classList.add('is-hidden');
-                    document.getElementById('miscFields').classList.remove('is-hidden');
-                    document.getElementById('miscLabel').value = selectedObject.label || '';
-                }
-                
-                // Set common fields
-                document.getElementById('objectNotes').value = selectedObject.note || '';
-                document.getElementById('objectTags').value = (selectedObject.tags || []).join(', ');
-                
-                // Show the editor
-                document.getElementById('objectEditor').classList.remove('is-hidden');
-            }
-            
-            // Save object changes
-            document.getElementById('saveObject').addEventListener('click', () => {
-                if (!selectedObject) return;
-                
-                const updates = {
-                    object_id: selectedObject.id,
-                    status: 'edited'
-                };
-                
-                if (selectedObject.type === 'book') {
-                    updates.title = document.getElementById('bookTitle').value;
-                    updates.author = document.getElementById('bookAuthor').value;
-                    updates.isbn = document.getElementById('bookIsbn').value;
-                } else {
-                    updates.label = document.getElementById('miscLabel').value;
-                }
-                
-                updates.notes = document.getElementById('objectNotes').value;
-                updates.tags = document.getElementById('objectTags').value
-                    .split(',')
-                    .map(tag => tag.trim())
-                    .filter(tag => tag);
-                
-                // Update in the UI
-                for (const key in updates) {
-                    if (key !== 'object_id' && key !== 'status') {
-                        selectedObject[key === 'notes' ? 'note' : key] = updates[key];
+
+            function selectObject(overlayElement) {
+                // Remove selection from previously selected object
+                if (selectedObjectId) {
+                    const prevSelected = container.querySelector(`.object-overlay[data-id="${selectedObjectId}"]`);
+                    if (prevSelected) {
+                        prevSelected.classList.remove('object-selected');
                     }
                 }
-                
-                // Send to server
+
+                // Add selection to current object
+                overlayElement.classList.add('object-selected');
+                selectedObjectId = overlayElement.dataset.id;
+
+                // Populate the editor
+                objectIdInput.value = selectedObjectId;
+                const objType = overlayElement.dataset.type;
+                const needsSearch = overlayElement.dataset.needsSearch === 'true';
+
+                // Populate confidence displays
+                yoloConfDisplay.textContent = overlayElement.dataset.yoloConfidence || 'N/A';
+                gptConfDisplay.textContent = overlayElement.dataset.gptConfidence || 'N/A';
+                searchFlagDisplay.classList.toggle('is-hidden', !needsSearch);
+
+                // Show/hide fields based on type
+                if (objType === 'book') {
+                    bookFields.classList.remove('is-hidden');
+                    miscFields.classList.add('is-hidden');
+                    bookTitleInput.value = overlayElement.dataset.title;
+                    bookAuthorInput.value = overlayElement.dataset.author;
+                    bookIsbnInput.value = overlayElement.dataset.isbn;
+                    miscLabelInput.value = ''; // Clear misc field
+                    editorSubtitle.textContent = `Editing Book (ID: ${selectedObjectId.substring(0, 6)}...)`;
+                } else { // misc
+                    bookFields.classList.add('is-hidden');
+                    miscFields.classList.remove('is-hidden');
+                    miscLabelInput.value = overlayElement.dataset.label;
+                    bookTitleInput.value = ''; // Clear book fields
+                    bookAuthorInput.value = '';
+                    bookIsbnInput.value = '';
+                    editorSubtitle.textContent = `Editing Misc Item (ID: ${selectedObjectId.substring(0, 6)}...)`;
+                }
+                // Populate common fields
+                objectNotesInput.value = overlayElement.dataset.notes;
+                objectTagsInput.value = overlayElement.dataset.tags;
+
+                objectEditor.classList.remove('is-hidden');
+            }
+
+            // Event listener for clicking object overlays
+            container.addEventListener('click', (event) => {
+                const targetOverlay = event.target.closest('.object-overlay');
+                if (targetOverlay) {
+                    selectObject(targetOverlay);
+                }
+                // Removed collection click logic
+            });
+
+            // Save object changes
+            document.getElementById('saveObject').addEventListener('click', () => {
+                if (!selectedObjectId) return;
+
+                // Find the overlay element to get its type again
+                const selectedOverlay = container.querySelector(`.object-overlay[data-id="${selectedObjectId}"]`);
+                if (!selectedOverlay) {
+                    console.error("Selected overlay not found during save!");
+                    return;
+                }
+                const objType = selectedOverlay.dataset.type;
+
+                // Prepare data payload based on type
+                const objectData = {
+                    object_id: selectedObjectId,
+                    notes: objectNotesInput.value,
+                    tags: objectTagsInput.value.split(',').map(tag => tag.trim()).filter(tag => tag !== '')
+                };
+
+                if (objType === 'book') {
+                    objectData.title = bookTitleInput.value;
+                    objectData.author = bookAuthorInput.value;
+                    objectData.isbn = bookIsbnInput.value;
+                    // Ensure label is null for books if it exists in payload
+                    objectData.label = null; 
+                } else {
+                    objectData.label = miscLabelInput.value;
+                    // Ensure book fields are null for misc items
+                    objectData.title = null;
+                    objectData.author = null;
+                    objectData.isbn = null;
+                }
+
+                // Update the overlay's data attributes immediately for visual feedback
+                selectedOverlay.dataset.title = objectData.title || '';
+                selectedOverlay.dataset.author = objectData.author || '';
+                selectedOverlay.dataset.isbn = objectData.isbn || '';
+                selectedOverlay.dataset.label = objectData.label || '';
+                selectedOverlay.dataset.notes = objectData.notes || '';
+                selectedOverlay.dataset.tags = objectData.tags.join(',');
+
+                console.log("Saving data:", objectData);
+                // Send data to backend (using the existing update API)
                 fetch('/api/shelf/update', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        shelf_id: '{{ shelf.id }}',
-                        objects: [updates]
-                    })
+                    // Send *only* the object being updated in the objects list
+                    body: JSON.stringify({ 
+                        shelf_id: '{{ shelf.id }}', 
+                        objects: [objectData] 
+                    }),
                 })
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        alert('Changes saved successfully!');
+                        console.log('Object updated successfully');
+                        // Maybe add a temporary success indicator?
+                        editorSubtitle.textContent = `Saved! (ID: ${selectedObjectId.substring(0, 6)}...)`;
+                        setTimeout(() => {
+                             if (selectedObjectId === objectIdInput.value) { // Check if still selected
+                                editorSubtitle.textContent = `Editing ${objType === 'book' ? 'Book' : 'Misc Item'} (ID: ${selectedObjectId.substring(0, 6)}...)`;
+                             }
+                        }, 1500); 
+                    } else {
+                        console.error('Error updating object:', data.error);
+                        alert('Error saving changes: ' + data.error);
                     }
+                })
+                .catch((error) => {
+                    console.error('Error:', error);
+                    alert('An unexpected network error occurred.');
                 });
             });
             
             // Publish shelf
             document.getElementById('publishShelf').addEventListener('click', () => {
-                fetch('/api/shelf/update', {
+                // Send final update with publish flag
+                 fetch('/api/shelf/update', {
                     method: 'POST',
                     headers: {
-                        'Content-Type': 'application/json'
+                        'Content-Type': 'application/json',
                     },
-                    body: JSON.stringify({
-                        shelf_id: '{{ shelf.id }}',
-                        publish: true
-                    })
+                    body: JSON.stringify({ 
+                        shelf_id: '{{ shelf.id }}', 
+                        objects: [], // No specific object updates needed for publish only
+                        publish: true 
+                    }),
                 })
                 .then(response => response.json())
                 .then(data => {
                     if (data.status === 'success') {
-                        window.location.href = '/view/{{ shelf.id }}';
+                        alert('Shelf published successfully!');
+                        // Redirect to the view page or index?
+                        window.location.href = `/view/${data.shelf_id}`;
+                    } else {
+                         console.error('Error publishing shelf:', data.error);
+                         alert('Error publishing shelf: ' + data.error);
                     }
+                })
+                .catch(error => {
+                     console.error('Error publishing shelf:', error);
+                     alert('An unexpected network error occurred during publishing.');
                 });
             });
+
+            // Initial positioning and reposition on resize/load
+            if (image && image.complete) {
+                positionOverlays();
+            } else if (image) {
+                image.onload = positionOverlays;
+            }
+            window.addEventListener('resize', positionOverlays);
         });
     </script>
 </body>

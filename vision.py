@@ -1,328 +1,222 @@
 import os
 import base64
-import requests
 from openai import OpenAI
 import json
-from PIL import Image
+from PIL import Image, ImageEnhance
 from io import BytesIO
 import logging
 
+from yolo_vision import detect_objects_yolo, preprocess_image_yolo
+
 # Configure logging
 logging.basicConfig(
-    level=logging.DEBUG,
-    format='%(asctime)s - %(levelname)s - %(message)s'
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(name)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 # Initialize OpenAI client
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-logger.info("Initialized OpenAI client")
+if not client.api_key:
+    logger.error("OPENAI_API_KEY environment variable not set.")
+else:
+    logger.info("Initialized OpenAI client")
 
-def preprocess_image(image_path):
-    """
-    Preprocesses the image to optimize for book detection:
-    - Adjusts contrast to make text more readable
-    - Ensures proper resolution (768px min on shortest side for high detail)
-    
-    Returns:
-        Tuple of (image_buffer, scale_factor, original_width, original_height)
-    """
-    logger.info(f"Starting image preprocessing for {image_path}")
-    try:
-        # Open the image
-        img = Image.open(image_path)
-        logger.debug(f"Successfully opened image: {image_path}")
-        
-        # Store original dimensions
-        original_width, original_height = img.size
-        logger.debug(f"Original dimensions: {original_width}x{original_height}")
-        
-        # Calculate new dimensions (ensuring shortest side is at least 768px for high detail)
-        width, height = img.size
-        scale_factor = max(768 / min(width, height), 1)
-        new_width = int(width * scale_factor)
-        new_height = int(height * scale_factor)
-        logger.debug(f"Calculated scale factor: {scale_factor}")
-        logger.debug(f"New dimensions: {new_width}x{new_height}")
-        
-        # Resize if needed
-        if scale_factor > 1:
-            logger.info(f"Resizing image with scale factor {scale_factor}")
-            img = img.resize((new_width, new_height), Image.LANCZOS)
-        
-        # Enhance contrast slightly to make text more readable
-        from PIL import ImageEnhance
-        logger.debug("Applying contrast enhancement")
-        enhancer = ImageEnhance.Contrast(img)
-        img = enhancer.enhance(1.2)  # Slight contrast boost
-        
-        # Save to a buffer
-        buffer = BytesIO()
-        img.save(buffer, format="JPEG", quality=95)
-        buffer.seek(0)
-        logger.debug("Image saved to buffer")
-        
-        return buffer, scale_factor, original_width, original_height
-    except Exception as e:
-        logger.error(f"Error preprocessing image: {e}")
-        # Return original image if preprocessing fails
-        img = Image.open(image_path)
-        width, height = img.size
-        logger.warning("Falling back to original image")
-        return open(image_path, 'rb'), 1.0, width, height
-
-def encode_image(image_buffer):
-    """Convert image to base64 encoding"""
-    logger.debug("Converting image to base64")
-    encoded = base64.b64encode(image_buffer.read()).decode('utf-8')
-    logger.debug(f"Base64 encoding length: {len(encoded)}")
+# --- Helper Functions ---
+def encode_image_pil(pil_image):
+    """Encodes a PIL image to base64 for OpenAI API."""
+    buffer = BytesIO()
+    pil_image.save(buffer, format="JPEG", quality=85) # Use reasonable quality
+    buffer.seek(0)
+    encoded = base64.b64encode(buffer.read()).decode('utf-8')
     return encoded
 
-def process_shelf_image(image_path):
+# --- New GPT-4o Crop Analysis Function (Step 3) ---
+def analyze_object_crop_gpt4o(crop_image, object_type_hint):
     """
-    Process a bookshelf image to detect books and other objects.
-    
+    Analyzes a single image crop using GPT-4o.
+
     Args:
-        image_path: Path to the image file
-        
+        crop_image (PIL.Image.Image): The cropped image of the object.
+        object_type_hint (str): The type ('book' or 'misc') detected by YOLO.
+
     Returns:
-        List of detected objects with metadata
+        dict: A dictionary containing the analysis results from GPT-4o,
+              including 'title', 'author', 'label', and 'confidence_assessment'.
+              Returns a default structure on failure.
     """
-    logger.info(f"Processing shelf image: {image_path}")
-    
-    # Preprocess the image
-    processed_image, scale_factor, original_width, original_height = preprocess_image(image_path)
-    logger.debug(f"Image preprocessed with scale factor: {scale_factor}")
-    
-    # Get dimensions of processed image for coordinate reference
-    try:
-        # Create a copy of the image to get the processed dimensions
-        img_copy = Image.open(BytesIO(processed_image.getvalue()))
-        processed_width, processed_height = img_copy.size
-        logger.debug(f"Processed dimensions: {processed_width}x{processed_height}")
-    except:
-        # Estimate processed dimensions if we can't read the buffer
-        processed_width = int(original_width * scale_factor)
-        processed_height = int(original_height * scale_factor)
-        logger.warning(f"Using estimated processed dimensions: {processed_width}x{processed_height}")
-    
-    # Decide on number of divisions based on image size
-    max_dimension = max(processed_width, processed_height)
-    use_octants = max_dimension > 1500
-    logger.debug(f"Max dimension: {max_dimension}, using octants: {use_octants}")
-    
-    # Generate coordinate reference for the prompt
-    if use_octants:
-        # Divide into eight sections (2x4 grid)
-        divisions = 8
-        cols = 4
-        rows = 2
-    else:
-        # Divide into four quadrants
-        divisions = 4
-        cols = 2
-        rows = 2
-    logger.debug(f"Grid divisions: {divisions} ({rows}x{cols})")
-    
-    # Create coordinate reference text
-    coordinate_reference = f"""
-    Image dimensions: {processed_width}x{processed_height} pixels.
-    
-    I've divided the image into {divisions} sections for easier reference:
-    """
-    
-    # Generate grid reference
-    cell_width = processed_width / cols
-    cell_height = processed_height / rows
-    logger.debug(f"Cell dimensions: {cell_width}x{cell_height}")
-    
-    grid_text = ""
-    section_number = 1
-    
-    for r in range(rows):
-        for c in range(cols):
-            top = int(r * cell_height)
-            left = int(c * cell_width)
-            right = int((c + 1) * cell_width)
-            bottom = int((r + 1) * cell_height)
-            
-            logger.debug(f"Section {section_number}: ({left},{top}) to ({right},{bottom})")
-            grid_text += f"\nSection {section_number}: top-left ({left},{top}), bottom-right ({right},{bottom})"
-            section_number += 1
-    
-    coordinate_reference += grid_text
-    
-    # Encode the image to base64
-    base64_image = encode_image(processed_image)
-    logger.debug("Image encoded to base64")
-    
-    # Define the JSON schema for structured output
-    schema = {
+    logger.info(f"Analyzing crop with GPT-4o (type hint: {object_type_hint})")
+    base64_crop = encode_image_pil(crop_image)
+
+    # Define the structure we want GPT-4o to return
+    json_schema = {
         "type": "object",
         "properties": {
-            "objects": {
-                "type": "array",
-                "items": {
-                    "type": "object",
-                    "properties": {
-                        "type": {
-                            "type": "string",
-                            "enum": ["book", "misc"]
-                        },
-                        "bounding_box": {
-                            "type": "array",
-                            "items": {"type": "number"}
-                        },
-                        "title": {"type": ["string", "null"]},
-                        "author": {"type": ["string", "null"]},
-                        "isbn": {"type": ["string", "null"]},
-                        "label": {"type": ["string", "null"]},
-                        "confidence": {"type": "number"}
-                    },
-                    "required": ["type", "bounding_box", "confidence", "title", "author", "isbn", "label"],
-                    "additionalProperties": False
-                }
-            }
+            "title": {"type": ["string", "null"], "description": "Detected book title, null if not a book or not visible."},
+            "author": {"type": ["string", "null"], "description": "Detected book author, null if not a book or not visible."},
+            "label": {"type": ["string", "null"], "description": "Descriptive label for non-book items, null if it's a book."},
+            "confidence_assessment": {"type": "string", "enum": ["confident", "meh", "no clue"], "description": "Your confidence in the identification (title/author for books, label for misc)."}
         },
-        "required": ["objects"],
-        "additionalProperties": False
+        "required": ["confidence_assessment"]
     }
-    logger.debug("JSON schema defined")
-    
-    try:
-        logger.info("Calling OpenAI API")
-        # Call OpenAI API with structured output
-        response = client.responses.create(
-            model="gpt-4o",  # Using GPT-4o for best vision capabilities
-            input=[
-                {
-                    "role": "system",
-                    "content": [
-                        {"type": "input_text", "text": f"""
-                        You are an expert at analyzing bookshelf images. Extract detailed information about all visible books and miscellaneous items.
-                        
-                        {coordinate_reference}
-                        
-                        For each BOOK:
-                        - Provide the most likely title and author based on visible spine text
-                        - If you can see an ISBN, include it
-                        - Create a precise bounding box: [x1, y1, x2, y2] coordinates (exactly 4 values)
-                          where x1,y1 is the top-left corner and x2,y2 is the bottom-right corner
-                          Use pixel coordinates matching the image dimensions you're viewing ({processed_width}x{processed_height})
-                        - Assign a confidence score (0.0-1.0)
-                        
-                        For each MISC object (non-book items):
-                        - Provide a descriptive label
-                        - Create a precise bounding box: [x1, y1, x2, y2] coordinates (exactly 4 values)
-                          where x1,y1 is the top-left corner and x2,y2 is the bottom-right corner
-                          Use pixel coordinates matching the image dimensions you're viewing ({processed_width}x{processed_height})
-                        - Assign a confidence score
-                        
-                        Be precise with bounding boxes. Coordinates should reflect the exact position of objects in the image.
-                        When referencing a book's location, you can mention which section(s) it appears in.
-                        For partially visible books, include them if you can identify any text.
-                        If text is unclear, provide your best guess and reduce the confidence score accordingly.
-                        
-                        IMPORTANT: Ensure your bounding box coordinates use the same scale as the image dimensions provided ({processed_width}x{processed_height} pixels).
-                        """}
-                    ]
-                },
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "input_text", "text": "Analyze this bookshelf image. Identify all books and miscellaneous items."},
-                        {
-                            "type": "input_image",
-                            "image_url": f"data:image/jpeg;base64,{base64_image}",
-                            "detail": "high"  # Using high detail for better text recognition
-                        }
-                    ]
-                }
-            ],
-            text={
-                "format": {
-                    "type": "json_schema",
-                    "name": "bookshelf_analysis",  # Required name parameter
-                    "schema": schema,
-                    "strict": True
-                }
-            }
-        )
-        logger.info("Received response from OpenAI API")
-        
-        # Parse the results
-        if response.output_text:
-            parsed_result = json.loads(response.output_text)
-            objects = parsed_result["objects"]
-            logger.info(f"Detected {len(objects)} objects")
-            
-            # Rescale bounding boxes to match original image dimensions
-            if scale_factor != 1.0:
-                logger.debug(f"Rescaling bounding boxes with scale factor: {scale_factor}")
-                for obj in objects:
-                    box = obj["bounding_box"]
-                    original_box = box.copy()
-                    # Convert from the scaled coordinates to the original image coordinates
-                    # Use round() instead of int() to avoid truncation errors
-                    box[0] = round(box[0] / scale_factor)  # x1
-                    box[1] = round(box[1] / scale_factor)  # y1
-                    box[2] = round(box[2] / scale_factor)  # x2
-                    box[3] = round(box[3] / scale_factor)  # y2
-                    logger.debug(f"Rescaled box from {original_box} to {box}")
-            
-            return objects
-        else:
-            # Handle potential refusal or error
-            logger.error("No output text in response")
-            return []
-            
-    except Exception as e:
-        logger.error(f"Error processing image with OpenAI: {e}")
-        
-        # For MVP fallback, return mock data if API call fails
-        logger.warning("Returning mock data due to API failure")
-        return [
-            {
-                "bounding_box": [100, 50, 200, 300],
-                "type": "book",
-                "title": "Error: API call failed",
-                "author": "Please try again",
-                "isbn": "",
-                "confidence": 0.1
-            }
-        ]
+    json_schema_string = json.dumps(json_schema)
 
-def post_process_results(detected_objects, image_width, image_height):
+    # Tailor the prompt based on the YOLO type hint
+    if object_type_hint == 'book':
+        user_prompt = "Analyze this image, likely a book spine or part of a book. Extract the title and author if clearly visible. If not, state null. Assess your confidence in identifying the text."
+        system_prompt = f"""You are an expert book identifier analyzing a cropped image. Focus on identifying book details (title, author). Respond ONLY with a JSON object matching this schema: {json_schema_string}. Assess confidence based *only* on the text visibility in *this specific crop*."""
+    else: # misc
+        user_prompt = "Analyze this cropped image of an object found on a shelf. Provide a brief descriptive label for the object (e.g., 'white mug', 'picture frame', 'small plant'). Assess your confidence in the label."
+        system_prompt = f"""You are an expert object identifier analyzing a cropped image. Identify the object with a short label. Respond ONLY with a JSON object matching this schema: {json_schema_string}. Focus only on the object in the crop."""
+
+    default_failure_output = {
+        "title": None, "author": None, "label": "GPT Error", "confidence_assessment": "no clue"
+    }
+
+    try:
+        logger.info("Calling OpenAI API for crop analysis.")
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": [
+                    {"type": "text", "text": user_prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_crop}", "detail": "high"}} # Use high detail for crops
+                ]}
+            ],
+            response_format={"type": "json_object"}
+        )
+        logger.info("Received crop analysis response from OpenAI.")
+
+        if response.choices and response.choices[0].message and response.choices[0].message.content:
+            response_content = response.choices[0].message.content
+            logger.debug(f"Raw GPT-4o crop response: {response_content[:200]}...")
+            parsed_result = json.loads(response_content)
+
+            # Validate structure and fill defaults
+            parsed_result.setdefault('title', None)
+            parsed_result.setdefault('author', None)
+            parsed_result.setdefault('label', None)
+            parsed_result.setdefault('confidence_assessment', 'no clue') # Default if missing
+
+            # Basic validation of confidence value
+            if parsed_result['confidence_assessment'] not in ["confident", "meh", "no clue"]:
+                logger.warning(f"Invalid confidence_assessment received: {parsed_result['confidence_assessment']}. Setting to 'no clue'.")
+                parsed_result['confidence_assessment'] = 'no clue'
+
+            logger.info(f"GPT-4o analysis result: Confidence='{parsed_result['confidence_assessment']}', Title='{parsed_result.get('title')}', Label='{parsed_result.get('label')}'")
+            return parsed_result
+        else:
+            raise ValueError("No valid response content from API.")
+
+    except (json.JSONDecodeError, ValueError) as json_err:
+        logger.error(f"Error parsing GPT-4o crop response: {json_err}", exc_info=True)
+        if 'response_content' in locals(): logger.error(f"Raw content: {response_content[:500]}...")
+        return default_failure_output
+    except Exception as e:
+        logger.error(f"Error analyzing crop with GPT-4o: {e}", exc_info=True)
+        return default_failure_output
+
+
+# --- Refactored Main Processing Function (Step 3) ---
+def process_shelf_image_yolo_gpt(image_path, yolo_conf_thresh=0.3, crop_padding=5):
     """
-    Performs post-processing on detected objects to improve quality:
-    - Filters out low confidence detections
-    - Ensures bounding boxes fit within image dimensions
-    - Sorts objects by position (left-to-right)
+    Processes shelf image using YOLOv8 for localization and GPT-4o for detailed
+    analysis of cropped regions.
+
+    Args:
+        image_path (str): Path to the input shelf image.
+        yolo_conf_thresh (float): Confidence threshold for YOLO detections.
+        crop_padding (int): Pixels to add around the YOLO box for cropping.
+
+    Returns:
+        list: A list of dictionaries, each representing an analyzed object.
+              Returns an empty list on major failure.
     """
-    logger.info(f"Post-processing {len(detected_objects)} detected objects")
-    logger.debug(f"Image dimensions: {image_width}x{image_height}")
-    
-    # Filter out low confidence detections
-    filtered_objects = [obj for obj in detected_objects if obj["confidence"] > 0.4]
-    logger.debug(f"Filtered to {len(filtered_objects)} objects after confidence threshold")
-    
-    # Ensure bounding boxes fit within image dimensions
-    # Note: We don't normalize coordinates again since they've already been 
-    # rescaled to original dimensions in process_shelf_image
-    for obj in filtered_objects:
-        box = obj["bounding_box"]
-        # Only apply limits if coordinates are outside image boundaries
-        if box[0] < 0 or box[1] < 0 or box[2] > image_width or box[3] > image_height:
-            original_box = box.copy()
-            # Ensure bounding box coordinates are within the image boundaries
-            box[0] = max(0, min(box[0], image_width))  # x1
-            box[1] = max(0, min(box[1], image_height))  # y1
-            box[2] = max(0, min(box[2], image_width))  # x2
-            box[3] = max(0, min(box[3], image_height))  # y2
-            logger.debug(f"Fixed out-of-bounds box from {original_box} to {box}")
-    
-    # Sort objects by x-coordinate (left to right)
-    filtered_objects.sort(key=lambda obj: obj["bounding_box"][0])
-    logger.info(f"Returning {len(filtered_objects)} post-processed objects")
-    
-    return filtered_objects
+    logger.info(f"Starting YOLO+GPT processing for: {image_path}")
+
+    # 1. Run YOLO detection
+    # We use the vanilla model specified in yolo_vision.py for this prototype
+    yolo_detections = detect_objects_yolo(image_path, confidence_thresh=yolo_conf_thresh)
+
+    if not yolo_detections:
+        logger.warning("No objects detected by YOLO, cannot proceed.")
+        return []
+
+    # 2. Load full image with PIL (handles orientation)
+    full_pil_image = preprocess_image_yolo(image_path) # Reusing the yolo preprocess here
+    if full_pil_image is None:
+        logger.error("Failed to load full image for cropping.")
+        return []
+    img_width, img_height = full_pil_image.size
+
+    final_analyzed_objects = []
+    logger.info(f"Processing {len(yolo_detections)} YOLO detections with GPT-4o...")
+
+    for i, detection in enumerate(yolo_detections):
+        yolo_type = detection['type']
+        yolo_box = detection['bounding_box']
+        yolo_conf = detection['confidence']
+        x1, y1, x2, y2 = yolo_box
+
+        logger.debug(f"Processing detection {i+1}: Type={yolo_type}, Box={yolo_box}, Conf={yolo_conf:.2f}")
+
+        # 3. Crop the detected region (Step 2) with padding
+        crop_x1 = max(0, x1 - crop_padding)
+        crop_y1 = max(0, y1 - crop_padding)
+        crop_x2 = min(img_width, x2 + crop_padding)
+        crop_y2 = min(img_height, y2 + crop_padding)
+
+        if crop_x1 >= crop_x2 or crop_y1 >= crop_y2:
+            logger.warning(f"Skipping zero-area crop for box {yolo_box} after padding.")
+            continue
+
+        try:
+            object_crop_pil = full_pil_image.crop((crop_x1, crop_y1, crop_x2, crop_y2))
+        except Exception as e_crop:
+            logger.error(f"Failed to crop image for box {yolo_box}: {e_crop}", exc_info=True)
+            continue
+
+        # 4. Analyze the crop with GPT-4o (Step 3)
+        gpt_analysis = analyze_object_crop_gpt4o(object_crop_pil, yolo_type)
+
+        # 5. Process results (Step 4) and combine data
+        final_object_data = {
+            "yolo_type": yolo_type,
+            "yolo_confidence": yolo_conf,
+            "bounding_box": yolo_box, # Original YOLO box (not the padded crop box)
+            "gpt_confidence": gpt_analysis.get('confidence_assessment', 'no clue'),
+            "title": gpt_analysis.get('title'),
+            "author": gpt_analysis.get('author'),
+            "label": gpt_analysis.get('label'),
+            "needs_agentic_search": False # Default
+        }
+
+        if final_object_data['gpt_confidence'] == 'meh':
+            final_object_data['needs_agentic_search'] = True
+            logger.info(f"Detection {i+1} marked as 'meh', flagging for agentic search.")
+        elif final_object_data['gpt_confidence'] == 'no clue':
+             logger.info(f"Detection {i+1} marked as 'no clue'.")
+        # else: 'confident' - data is used as-is
+
+        final_analyzed_objects.append(final_object_data)
+
+    logger.info(f"Finished processing. Returning {len(final_analyzed_objects)} analyzed objects.")
+    return final_analyzed_objects
+
+
+# --- Keep post_process_results? ---
+# This function was previously used to filter/sort results from the old pipeline.
+# We might need a *new* post-processing function tailored to the output of
+# process_shelf_image_yolo_gpt if filtering (e.g., by combined confidence)
+# or sorting is still needed downstream. For now, we comment it out.
+# def post_process_results(...) -> THIS FUNCTION IS NO LONGER DIRECTLY APPLICABLE
+
+# --- Old functions to be removed/commented out ---
+# def preprocess_image(...) # Replaced by using preprocess_image_yolo
+# def encode_image(...) # Replaced by encode_image_pil
+# def identify_book_rows_on_processed_image(...) # Replaced by YOLO
+# def analyze_book_collection_crop(...) # Replaced by analyze_object_crop_gpt4o
+# def process_shelf_image(...) # Replaced by process_shelf_image_yolo_gpt
+
+# Note: The actual removal/commenting out will happen in the edit tool call.

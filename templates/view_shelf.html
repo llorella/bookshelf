@@ -9,47 +9,71 @@
         .shelf-container {
             position: relative;
             width: 100%;
+            max-width: 1200px; /* Max width for larger screens */
+            margin: auto; /* Center the container */
             height: auto;
             overflow: hidden;
+            background-color: #f5f5f5;
         }
         .shelf-image {
             width: 100%;
             height: auto;
             display: block;
+            max-height: 80vh;
+            object-fit: contain;
+        }
+        .overlay {
+            position: absolute;
+            box-sizing: border-box;
+            cursor: pointer;
+            transform-origin: top left;
+            pointer-events: auto; /* Ensure overlays are clickable/hoverable */
         }
         .object-overlay {
-            position: absolute;
             border: 2px solid;
             background-color: rgba(255, 255, 255, 0.3);
-            cursor: pointer;
-            /* Ensure percentage-based positioning works */
-            transform-origin: top left;
+            transition: background-color 0.3s ease;
         }
-        .book-overlay {
-            border-color: #3273dc;
+        .object-overlay:hover {
+            background-color: rgba(255, 255, 0, 0.4); /* Yellow highlight on hover */
         }
-        .misc-overlay {
-            border-color: #ff3860;
-        }
+        .book-overlay { border-color: #3273dc; }
+        .misc-overlay { border-color: #ff3860; }
+        
         .object-tooltip {
-            position: absolute;
-            background-color: white;
-            border: 1px solid #ccc;
-            padding: 10px;
+            position: fixed; /* Use fixed to position relative to viewport */
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 8px 12px;
             border-radius: 4px;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
-            max-width: 250px;
-            z-index: 100;
+            font-size: 0.9em;
+            max-width: 300px;
+            z-index: 1000;
             display: none;
+            pointer-events: none; /* Tooltip shouldn't capture mouse */
+            white-space: normal; /* Allow text wrapping */
+        }
+        .card-highlight {
+            transition: box-shadow 0.3s ease-in-out;
+            box-shadow: 0 0 15px rgba(50, 115, 220, 0.7); /* Highlight effect */
         }
     </style>
 </head>
 <body>
-    <section class="hero is-primary">
+    <section class="hero is-link"> <!-- Changed to is-link for variety -->
         <div class="hero-body">
             <div class="container">
-                <h1 class="title">{{ shelf.title }}</h1>
-                <h2 class="subtitle">Shared Bookshelf</h2>
+                <!-- Shelf title might not exist, add default -->
+                <h1 class="title">{{ shelf.title or 'Bookshelf View' }}</h1> 
+                <p class="subtitle">
+                    <!-- Display publish date if available -->
+                    {% if shelf.status == 'published' and shelf.published_at %}
+                        Published: {{ shelf.published_at | format_datetime }}
+                    {% elif shelf.updated_at %}
+                        Last Updated: {{ shelf.updated_at | format_datetime }}
+                    {% endif %}
+                    <!-- Add user info if available -->
+                </p>
             </div>
         </div>
     </section>
@@ -57,10 +81,27 @@
     <section class="section">
         <div class="container">
             <div class="shelf-container" id="shelf-container">
-                <img src="{{ shelf.image_url }}" alt="Bookshelf" class="shelf-image" id="shelf-image">
+                 <!-- Display the first image associated with the shelf -->
+                 {% if shelf.images and shelf.images|length > 0 %}
+                     {% set main_image = shelf.images[0] %}
+                     <img src="{{ main_image.image_url }}" 
+                          alt="Bookshelf" 
+                          class="shelf-image" 
+                          id="shelf-image"
+                          data-source-width="{{ main_image.processed_width }}"
+                          data-source-height="{{ main_image.processed_height }}">
+                 {% else %}
+                     <p class="has-text-danger">Shelf image not found.</p>
+                 {% endif %}
+                
+                <!-- Render Object Overlays (interactive) directly from shelf.objects -->
                 {% for obj in shelf.objects %}
-                <div class="object-overlay {{ 'book-overlay' if obj.type == 'book' else 'misc-overlay' }}" 
+                <div class="overlay object-overlay {{ 'book-overlay' if obj.type == 'book' else 'misc-overlay' }}" 
                      data-id="{{ obj.id }}"
+                     data-type="{{ obj.type }}"
+                     data-title="{{ obj.title | default('', true) }}"
+                     data-author="{{ obj.author | default('', true) }}"
+                     data-label="{{ obj.label | default('', true) }}"
                      data-x1="{{ obj.bounding_box[0] }}" 
                      data-y1="{{ obj.bounding_box[1] }}" 
                      data-x2="{{ obj.bounding_box[2] }}" 
@@ -75,40 +116,41 @@
                 <div class="column is-12">
                     <div class="content">
                         <h3 class="title is-4">Shelf Contents</h3>
-                        
-                        <div class="columns is-multiline">
-                            {% for obj in shelf.objects %}
-                            <div class="column is-4">
-                                <div class="card" data-id="{{ obj.id }}">
-                                    <div class="card-content">
-                                        {% if obj.type == 'book' %}
-                                        <p class="title is-5">{{ obj.title }}</p>
-                                        <p class="subtitle is-6">by {{ obj.author }}</p>
-                                        {% if obj.isbn %}
-                                        <p>ISBN: {{ obj.isbn }}</p>
-                                        {% endif %}
-                                        {% else %}
-                                        <p class="title is-5">{{ obj.label }}</p>
-                                        {% endif %}
-                                        
-                                        {% if obj.note %}
-                                        <div class="content">
-                                            <p>{{ obj.note }}</p>
+                        {% if not shelf.objects %}
+                            <p>No items found on this shelf.</p>
+                        {% else %}
+                            <div class="columns is-multiline">
+                                {% for obj in shelf.objects %}
+                                <div class="column is-one-third">
+                                    <div class="card h-100" data-id="{{ obj.id }}"> <!-- Add h-100 if using Bulma extensions or custom CSS for equal height -->
+                                        <div class="card-content">
+                                            {% if obj.type == 'book' %}
+                                            <p class="title is-5">{{ obj.title or 'Untitled Book' }}</p>
+                                            <p class="subtitle is-6">{{ obj.author or 'Unknown Author' }}</p>
+                                            {% if obj.isbn %}<p class="is-size-7">ISBN: {{ obj.isbn }}</p>{% endif %}
+                                            {% else %}
+                                            <p class="title is-5">{{ obj.label or 'Misc Item' }}</p>
+                                            {% endif %}
+                                            
+                                            {% if obj.note %}
+                                            <div class="content mt-2">
+                                                <strong>Notes:</strong> <p>{{ obj.note }}</p>
+                                            </div>
+                                            {% endif %}
+                                            
+                                            {% if obj.tags and obj.tags|length > 0 %}
+                                            <div class="tags mt-2">
+                                                {% for tag in obj.tags %}
+                                                <span class="tag is-info">{{ tag }}</span>
+                                                {% endfor %}
+                                            </div>
+                                            {% endif %}
                                         </div>
-                                        {% endif %}
-                                        
-                                        {% if obj.tags and obj.tags|length > 0 %}
-                                        <div class="tags">
-                                            {% for tag in obj.tags %}
-                                            <span class="tag is-info">{{ tag }}</span>
-                                            {% endfor %}
-                                        </div>
-                                        {% endif %}
                                     </div>
                                 </div>
+                                {% endfor %}
                             </div>
-                            {% endfor %}
-                        </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
@@ -117,112 +159,137 @@
 
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            const shelfObjects = {{ shelf.objects|tojson }};
             const tooltip = document.getElementById('objectTooltip');
+            const image = document.getElementById('shelf-image');
+            const container = document.getElementById('shelf-container');
             
-            // Position all overlays correctly
+            function scaleCoords(originalX, originalY, scaleX, scaleY) {
+                return { x: originalX * scaleX, y: originalY * scaleY };
+            }
+
             function positionOverlays() {
-                const image = document.getElementById('shelf-image');
-                const container = document.getElementById('shelf-container');
-                const displayedWidth = image.clientWidth;
-                const displayedHeight = image.clientHeight;
+                 if (!image || !image.complete) {
+                    console.warn("View: Image element not found or not loaded yet for positioning");
+                    return; 
+                }
                 
-                // Get the natural dimensions of the image
-                const naturalWidth = image.naturalWidth;
-                const naturalHeight = image.naturalHeight;
+                // Read the source dimensions stored in data attributes
+                const sourceWidth = parseFloat(image.dataset.sourceWidth);
+                const sourceHeight = parseFloat(image.dataset.sourceHeight);
+
+                if (!sourceWidth || !sourceHeight || sourceWidth === 0 || sourceHeight === 0) {
+                    console.error("View: Source dimensions not found or invalid in image data attributes. Cannot scale overlays accurately.");
+                    // Fallback: Use naturalWidth/Height, but might be wrong due to EXIF
+                    // sourceWidth = image.naturalWidth;
+                    // sourceHeight = image.naturalHeight;
+                     // Or simply return if accurate dimensions are critical
+                     return; 
+                }
+
+                const displayedWidth = image.clientWidth; // Current width of the img element
+                const displayedHeight = image.clientHeight; // Current height of the img element
                 
-                // Calculate scale factors
-                const scaleX = displayedWidth / naturalWidth;
-                const scaleY = displayedHeight / naturalHeight;
+                // Calculate scale factors based on displayed size vs source size
+                const scaleX = displayedWidth / sourceWidth;
+                const scaleY = displayedHeight / sourceHeight;
                 
-                // Position each overlay
-                document.querySelectorAll('.object-overlay').forEach(overlay => {
-                    const x1 = parseFloat(overlay.dataset.x1);
-                    const y1 = parseFloat(overlay.dataset.y1);
-                    const x2 = parseFloat(overlay.dataset.x2);
-                    const y2 = parseFloat(overlay.dataset.y2);
+                 if (isNaN(scaleX) || isNaN(scaleY) || scaleX <= 0 || scaleY <= 0) {
+                    console.error(`View: Invalid scale factors calculated (scaleX: ${scaleX}, scaleY: ${scaleY}). Aborting overlay positioning.`);
+                    return; 
+                }
+
+                document.querySelectorAll('.overlay').forEach(overlay => {
+                    const x1 = parseFloat(overlay.dataset.x1); const y1 = parseFloat(overlay.dataset.y1);
+                    const x2 = parseFloat(overlay.dataset.x2); const y2 = parseFloat(overlay.dataset.y2);
                     
-                    // Scale the coordinates
+                    // Apply scaling directly
                     const scaledX1 = x1 * scaleX;
                     const scaledY1 = y1 * scaleY;
                     const scaledWidth = (x2 - x1) * scaleX;
                     const scaledHeight = (y2 - y1) * scaleY;
                     
-                    // Apply the scaled positions
-                    overlay.style.left = `${scaledX1}px`;
-                    overlay.style.top = `${scaledY1}px`;
-                    overlay.style.width = `${scaledWidth}px`;
-                    overlay.style.height = `${scaledHeight}px`;
+                    // Position relative to the image element (offsets are handled by container?)
+                    overlay.style.left = `${scaledX1}px`; 
+                    overlay.style.top = `${scaledY1}px`; 
+                    overlay.style.width = `${Math.max(0, scaledWidth)}px`;
+                    overlay.style.height = `${Math.max(0, scaledHeight)}px`;
                 });
             }
             
-            // Position overlays on initial load
-            positionOverlays();
+            function debounce(func, wait) {
+                let timeout;
+                return function executedFunction(...args) {
+                    const later = () => { clearTimeout(timeout); func(...args); };
+                    clearTimeout(timeout); timeout = setTimeout(later, wait);
+                };
+            };
+
+            const debouncedPositionOverlays = debounce(positionOverlays, 150);
+
+             if (image) {
+                if (image.complete) {
+                    positionOverlays();
+                } else {
+                    image.onload = positionOverlays;
+                }
+                window.addEventListener('resize', debouncedPositionOverlays);
+            } else {
+                console.error("View: Shelf image element not found. Cannot initialize overlay positioning.");
+            }
             
-            // Reposition on window resize
-            window.addEventListener('resize', positionOverlays);
-            
-            // Also reposition when the image loads (in case it wasn't loaded yet)
-            document.getElementById('shelf-image').addEventListener('load', positionOverlays);
-            
-            // Add mouse events to overlays
+            // Add mouse events to OBJECT overlays
             document.querySelectorAll('.object-overlay').forEach(overlay => {
                 overlay.addEventListener('mouseenter', (e) => {
-                    const objectId = overlay.dataset.id;
-                    const object = shelfObjects.find(obj => obj.id === objectId);
-                    
+                    const targetOverlay = e.currentTarget;
+                    const objectType = targetOverlay.dataset.type;
                     let content = '';
-                    if (object.type === 'book') {
-                        content = `<strong>${object.title}</strong><br>by ${object.author}`;
+                    if (objectType === 'book') {
+                        content = `<strong>${targetOverlay.dataset.title || 'Book'}</strong><br>${targetOverlay.dataset.author || 'Unknown Author'}`;
                     } else {
-                        content = `<strong>${object.label}</strong>`;
+                        content = `<strong>${targetOverlay.dataset.label || 'Item'}</strong>`;
                     }
-                    
                     tooltip.innerHTML = content;
                     tooltip.style.display = 'block';
-                    
-                    // Position tooltip near mouse but not covering it
-                    const rect = overlay.getBoundingClientRect();
-                    const scrollTop = window.pageYOffset || document.documentElement.scrollTop;
-                    
-                    tooltip.style.left = `${rect.right + 10}px`;
-                    tooltip.style.top = `${rect.top + scrollTop}px`;
+
+                    // Position tooltip near the mouse pointer
+                    tooltip.style.left = `${e.clientX + 15}px`; // Offset from cursor
+                    tooltip.style.top = `${e.clientY + 15}px`;
+
+                    // Highlight corresponding card
+                    const card = document.querySelector(`.card[data-id="${targetOverlay.dataset.id}"]`);
+                    if (card) card.classList.add('card-highlight');
                 });
                 
-                overlay.addEventListener('mouseleave', () => {
+                overlay.addEventListener('mouseleave', (e) => {
                     tooltip.style.display = 'none';
+                    // Remove card highlight
+                    const card = document.querySelector(`.card[data-id="${e.currentTarget.dataset.id}"]`);
+                    if (card) card.classList.remove('card-highlight');
                 });
-                
-                // Highlight corresponding card when clicking overlay
-                overlay.addEventListener('click', () => {
-                    const objectId = overlay.dataset.id;
-                    const card = document.querySelector(`.card[data-id="${objectId}"]`);
-                    
-                    // Scroll to the card
-                    card.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    
-                    // Highlight briefly
-                    card.classList.add('has-background-light');
-                    setTimeout(() => {
-                        card.classList.remove('has-background-light');
-                    }, 2000);
+
+                // Optional: Add click listener to scroll to the card?
+                overlay.addEventListener('click', (e) => {
+                     const card = document.querySelector(`.card[data-id="${e.currentTarget.dataset.id}"]`);
+                     if (card) {
+                         card.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                         card.classList.add('card-highlight');
+                         setTimeout(() => card.classList.remove('card-highlight'), 1500); // Remove highlight after a bit
+                     }
                 });
             });
-            
-            // Highlight overlay when hovering over card
-            document.querySelectorAll('.card').forEach(card => {
-                card.addEventListener('mouseenter', () => {
-                    const objectId = card.dataset.id;
-                    const overlay = document.querySelector(`.object-overlay[data-id="${objectId}"]`);
-                    overlay.style.backgroundColor = 'rgba(255, 255, 0, 0.3)';
+
+             // Add mouse events to list CARDS
+            document.querySelectorAll('.card[data-id]').forEach(card => {
+                card.addEventListener('mouseenter', (e) => {
+                    const overlay = document.querySelector(`.object-overlay[data-id="${e.currentTarget.dataset.id}"]`);
+                    if (overlay) overlay.style.backgroundColor = 'rgba(255, 255, 0, 0.4)'; // Highlight overlay
                 });
-                
-                card.addEventListener('mouseleave', () => {
-                    const objectId = card.dataset.id;
-                    const overlay = document.querySelector(`.object-overlay[data-id="${objectId}"]`);
-                    overlay.style.backgroundColor = 'rgba(255, 255, 255, 0.3)';
+                card.addEventListener('mouseleave', (e) => {
+                    const overlay = document.querySelector(`.object-overlay[data-id="${e.currentTarget.dataset.id}"]`);
+                    if (overlay) overlay.style.backgroundColor = 'rgba(255, 255, 255, 0.3)'; // Restore default overlay bg
                 });
             });
+
         });
     </script>
 </body>
